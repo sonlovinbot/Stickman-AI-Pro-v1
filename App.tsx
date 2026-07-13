@@ -1,20 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
 import { Button } from './components/Button';
-import { 
-  AppStep, 
-  GenerationConfig, 
-  GeneratedTitle, 
-  Scene 
+import {
+  ApiSettings,
+  AppStep,
+  GenerationConfig,
+  GeneratedTitle,
+  Scene
 } from './types';
-import { 
-  generateViralTitles, 
-  generateScriptScenes, 
-  generateDoodleImage,
-  generateThumbnailImage,
+import {
+  generateViralTitles,
+  generateScriptScenes,
   rewriteScript,
   generateSpeech
 } from './services/geminiService';
+import { generateDoodleImage, generateThumbnailImage } from './services/imageService';
+import { loadSettings, saveSettings } from './services/settingsService';
 
 import { StepInput } from './components/StepInput';
 import { StepTitles } from './components/StepTitles';
@@ -22,12 +23,16 @@ import { StepScript } from './components/StepScript';
 import { StepVisuals } from './components/StepVisuals';
 import { StepThumbnail } from './components/StepThumbnail';
 import { StepAudio } from './components/StepAudio';
+import { SettingsModal } from './components/SettingsModal';
 
 // Define window.aistudio interface
 declare global {
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;
     openSelectKey: () => Promise<void>;
+  }
+  interface Window {
+    aistudio?: AIStudio;
   }
 }
 
@@ -37,7 +42,11 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
+
+  // API Settings (image provider: Gemini or Coachio)
+  const [settings, setSettings] = useState<ApiSettings>(loadSettings);
+  const [showSettings, setShowSettings] = useState(false);
+
   // Data State
   const [config, setConfig] = useState<GenerationConfig>({
     topic: '',
@@ -78,6 +87,12 @@ const App: React.FC = () => {
     } else {
         alert("API Key selection not supported in this environment.");
     }
+  };
+
+  const handleSaveSettings = (next: ApiSettings) => {
+    setSettings(next);
+    saveSettings(next);
+    setShowSettings(false);
   };
 
   // --- IMPORT / EXPORT LOGIC ---
@@ -197,12 +212,12 @@ const App: React.FC = () => {
 
   const handleStartVisualGeneration = async () => {
     setStep(AppStep.GENERATE_VISUALS);
-    
+
     for (const scene of scenes) {
         if (!scene.imageUrl) {
             setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, isGeneratingImage: true } : s));
             try {
-                const imageUrl = await generateDoodleImage(scene.visualPrompt, scene.keywords, config.aspectRatio, config.language);
+                const imageUrl = await generateDoodleImage(scene.visualPrompt, scene.keywords, config.aspectRatio, config.language, settings);
                 setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, imageUrl, isGeneratingImage: false } : s));
                 await new Promise(r => setTimeout(r, 2000));
             } catch (e: any) {
@@ -216,11 +231,11 @@ const App: React.FC = () => {
   const handleRegenerateImage = async (id: string, prompt: string, keywords: string) => {
     setScenes(prev => prev.map(s => s.id === id ? { ...s, isGeneratingImage: true } : s));
     try {
-        const imageUrl = await generateDoodleImage(prompt, keywords, config.aspectRatio, config.language);
+        const imageUrl = await generateDoodleImage(prompt, keywords, config.aspectRatio, config.language, settings);
         setScenes(prev => prev.map(s => s.id === id ? { ...s, imageUrl, isGeneratingImage: false } : s));
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
-        alert("Máy chủ Gemini đang quá tải. Vui lòng thử lại sau giây lát.");
+        alert(e?.message || "Máy chủ đang quá tải. Vui lòng thử lại sau giây lát.");
         setScenes(prev => prev.map(s => s.id === id ? { ...s, isGeneratingImage: false } : s));
     }
   };
@@ -238,11 +253,11 @@ const App: React.FC = () => {
       const visualMetaphor = scenes.length > 0 ? scenes[0].visualPrompt : "";
       
       try {
-          const url = await generateThumbnailImage(selectedTitle?.text || config.topic, visualMetaphor, config.aspectRatio);
+          const url = await generateThumbnailImage(selectedTitle?.text || config.topic, visualMetaphor, config.aspectRatio, settings);
           setThumbnailUrl(url);
-      } catch (e) {
+      } catch (e: any) {
           console.error(e);
-          alert("Lỗi tạo thumbnail.");
+          alert(e?.message || "Lỗi tạo thumbnail.");
       } finally {
           setIsGeneratingThumbnail(false);
       }
@@ -293,11 +308,31 @@ const App: React.FC = () => {
     }
   };
 
+  /**
+   * Gemini returns base64 data URLs; Coachio returns CDN links that we could not
+   * inline because of CORS. Add whichever we have — falling back to a .txt link
+   * so the export never silently drops an image.
+   */
+  const addImageToZip = async (folder: JSZip, filename: string, imageUrl: string) => {
+    if (imageUrl.startsWith('data:')) {
+      folder.file(`${filename}.png`, imageUrl.split(',')[1], { base64: true });
+      return;
+    }
+    try {
+      const response = await fetch(imageUrl);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      folder.file(`${filename}.png`, await response.blob());
+    } catch (e) {
+      console.error(`Không tải được ảnh ${filename}`, e);
+      folder.file(`${filename}.url.txt`, imageUrl);
+    }
+  };
+
   const handleExportZip = async () => {
     const zip = new JSZip();
     const folderName = config.topic.replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const folder = zip.folder(folderName);
-    
+
     if (!folder) return;
 
     // 1. Script File
@@ -312,17 +347,15 @@ const App: React.FC = () => {
     folder.file("script.txt", scriptContent);
 
     // 2. Images
-    scenes.forEach((scene, idx) => {
+    for (const [idx, scene] of scenes.entries()) {
         if (scene.imageUrl) {
-            const base64Data = scene.imageUrl.split(',')[1];
-            folder.file(`scene_${idx + 1}.png`, base64Data, { base64: true });
+            await addImageToZip(folder, `scene_${idx + 1}`, scene.imageUrl);
         }
-    });
+    }
 
     // 3. Thumbnail
     if (thumbnailUrl) {
-        const base64Data = thumbnailUrl.split(',')[1];
-        folder.file("thumbnail.png", base64Data, { base64: true });
+        await addImageToZip(folder, "thumbnail", thumbnailUrl);
     }
 
     // 4. Audio
@@ -356,6 +389,9 @@ const App: React.FC = () => {
                 </div>
                 <Button onClick={handleConnectKey} className="scale-125">
                     🔑 Kết nối API Key
+                </Button>
+                <Button variant="ghost" onClick={() => setShowSettings(true)}>
+                    ⚙️ Hoặc cấu hình nguồn ảnh (Coachio)
                 </Button>
             </div>
         );
@@ -440,7 +476,10 @@ const App: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
             </svg>
           </div>
-          <h1 className="font-hand text-3xl font-bold text-ink tracking-wide">VibeSketch AI</h1>
+          <div>
+            <h1 className="font-hand text-3xl font-bold text-ink tracking-wide leading-none">Stickman AI Pro</h1>
+            <p className="font-sans text-[10px] uppercase tracking-widest text-gray-500">by Coachio</p>
+          </div>
         </div>
         
         <div className="flex items-center gap-2 md:gap-4">
@@ -460,12 +499,22 @@ const App: React.FC = () => {
                >
                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
                </button>
-               <button 
+               <button
                  onClick={handleExportJSON}
                  className="p-2 text-ink hover:bg-black/5 rounded-full transition-colors tooltip"
                  title="Lưu Project (JSON)"
                >
                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+               </button>
+               <button
+                 onClick={() => setShowSettings(true)}
+                 className="p-2 text-ink hover:bg-black/5 rounded-full transition-colors tooltip relative"
+                 title="Cài đặt API"
+               >
+                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                 {settings.imageProvider === 'coachio' && (
+                   <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full" />
+                 )}
                </button>
              </div>
 
@@ -495,6 +544,15 @@ const App: React.FC = () => {
       <main className="flex-1 flex flex-col items-center justify-start p-6 md:p-12 w-full">
         {renderContent()}
       </main>
+
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          onSave={handleSaveSettings}
+          onClose={() => setShowSettings(false)}
+          onConnectGeminiKey={handleConnectKey}
+        />
+      )}
     </div>
   );
 };

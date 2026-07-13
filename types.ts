@@ -29,6 +29,30 @@ export enum AppStep {
 
 export type Language = 'Vietnamese' | 'English' | 'Japanese';
 
+export type ImageProvider = 'gemini' | 'coachio';
+
+export type CoachioResolution = '1k' | '2k' | '4k';
+
+/** `auto` means "let Coachio decide"; anything else overrides the app's aspect ratio. */
+export type CoachioAspectRatio =
+  | 'follow-app'
+  | 'auto'
+  | '1:1' | '5:4' | '9:16' | '21:9' | '16:9' | '4:3' | '3:2' | '4:5' | '3:4' | '2:3';
+
+export interface CoachioSettings {
+  apiKey: string;
+  baseUrl: string;
+  resolution: CoachioResolution;
+  aspectRatio: CoachioAspectRatio;
+  /** CDN URLs returned by POST /upload/image. Max 5, used for image-to-image style locking. */
+  referenceImages: string[];
+}
+
+export interface ApiSettings {
+  imageProvider: ImageProvider;
+  coachio: CoachioSettings;
+}
+
 export interface GenerationConfig {
   topic: string;
   tone: 'Stoic' | 'Motivational' | 'Dark Philosophy' | 'Humorous';
