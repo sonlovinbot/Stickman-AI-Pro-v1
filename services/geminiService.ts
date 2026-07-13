@@ -187,39 +187,18 @@ export const generateScriptScenes = async (title: string, duration: string, lang
 };
 
 /**
- * Generate Doodle Image (With Retry)
+ * Render an image prompt with Nano Banana Pro (Gemini 3 Pro Image). With retry.
+ * Prompts are built in ./imagePrompts so Coachio renders from the same text.
  */
-export const generateDoodleImage = async (visualPrompt: string, textToRender: string, aspectRatio: '16:9' | '9:16', language: Language): Promise<string | undefined> => {
+export const generateGeminiImage = async (prompt: string, aspectRatio: '16:9' | '9:16'): Promise<string | undefined> => {
   const ai = getAI();
-  
-  const fullPrompt = `
-    Create a clean, funny, minimalist digital illustration in the style of "Better Than Yesterday" or "Casually Explained" YouTube channels.
-    
-    SUBJECT: A classic STICK FIGURE representing this concept: ${visualPrompt}.
-    TEXT: Write "${textToRender}" clearly in the image. Font: Hand-written, bold black.
-    
-    STYLE RULES:
-    1. CHARACTER: Classic stickman. Perfect circle head. Simple stick limbs. 
-    2. EXPRESSION: The stickman MUST have a clear facial expression (Eyes and Mouth only).
-    3. LINES: Clean, consistent, smooth black lines. NOT messy. NO "pencil" texture.
-    4. COLOR: BLACK lines only. 
-    5. BACKGROUND: Solid OFF-WHITE / BEIGE (#FDF6E3). Flat color.
-    
-    Important: The text "${textToRender}" must be legible. It is in ${language}.
-    
-    COMPOSITION:
-    - Center the stickman.
-    - Keep it simple and uncluttered. 
-    - High contrast: Black on Beige.
-    - Format: ${aspectRatio === '9:16' ? 'Vertical Portrait (9:16)' : 'Horizontal Landscape (16:9)'}.
-  `;
 
   return withRetry(async () => {
     const response = await ai.models.generateContent({
       model: "gemini-3-pro-image-preview",
-      contents: fullPrompt,
+      contents: prompt,
       config: {
-        imageConfig: { 
+        imageConfig: {
             aspectRatio: aspectRatio,
             imageSize: "1K"
         }
@@ -236,48 +215,6 @@ export const generateDoodleImage = async (visualPrompt: string, textToRender: st
     return undefined;
   });
 };
-
-/**
- * Generate Thumbnail Image (With Retry)
- */
-export const generateThumbnailImage = async (title: string, visualMetaphor: string = "", aspectRatio: '16:9' | '9:16'): Promise<string | undefined> => {
-    const ai = getAI();
-    const prompt = `
-      YouTube Thumbnail for: "${title}".
-      Visual: A funny, highly expressive STICK FIGURE engaging with: ${visualMetaphor}.
-      
-      STYLE RULES:
-      1. CHARACTER: Classic stickman. Perfect circle head. Simple stick limbs. 
-      2. EXPRESSION: Highly expressive face (shocked, thinking, happy).
-      3. LINES: Clean, consistent, smooth black lines. NOT messy.
-      4. BACKGROUND: Solid OFF-WHITE / BEIGE (#FDF6E3). Flat color.
-      
-      Format: Minimalist, clean, high contrast (Black on Beige).
-      No text in the image.
-    `;
-  
-    return withRetry(async () => {
-      const response = await ai.models.generateContent({
-        model: "gemini-3-pro-image-preview",
-        contents: prompt,
-        config: {
-          imageConfig: { 
-              aspectRatio: aspectRatio,
-              imageSize: "1K" 
-          }
-        }
-      });
-  
-      if (response.candidates && response.candidates[0].content.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData && part.inlineData.data) {
-            return `data:image/png;base64,${part.inlineData.data}`;
-          }
-        }
-      }
-      return undefined;
-    });
-  };
 
 /**
  * Rewrite script content (Longer/Shorter)
